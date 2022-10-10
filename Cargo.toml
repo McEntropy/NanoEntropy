@@ -1,0 +1,14 @@
+[package]
+name = "nano_entropy"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.65"
+chrono = "0.4.22"
+fern = "0.6.1"
+log = "0.4.17"
+mcprotocol = { git = "https://github.com/MCEntropy/MCProtocol.rs", branch = "rewrite" }
+tokio = { version = "1.21.2", features = ["full"] }
