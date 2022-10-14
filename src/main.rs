@@ -3,7 +3,7 @@ use mcprotocol::auth::mojang::AuthenticatedClient;
 use mcprotocol::commands::{Command, NodeStub};
 use mcprotocol::pin_fut;
 use mcprotocol::pipeline::MinecraftProtocolWriter;
-use mcprotocol::prelude::drax::nbt::{read_nbt, CompoundTag};
+use mcprotocol::prelude::drax::nbt::{read_nbt, CompoundTag, Tag};
 use mcprotocol::prelude::drax::VarInt;
 use mcprotocol::prelude::AsyncWrite;
 use mcprotocol::protocol::chunk::Chunk;
@@ -12,7 +12,7 @@ use mcprotocol::protocol::login::cb::LoginSuccess;
 use mcprotocol::protocol::play::cb::*;
 use mcprotocol::protocol::play::RelativeArgument;
 use mcprotocol::protocol::status::cb::StatusResponsePlayers;
-use mcprotocol::registry::{ProtocolVersionKey, RegistryError, UNKNOWN_VERSION};
+use mcprotocol::registry::RegistryError;
 use mcprotocol::server_loop::{BaseConfiguration, IncomingAuthenticationOption, ServerLoop};
 use mcprotocol::status::StatusBuilder;
 use std::io::Cursor;
@@ -126,12 +126,70 @@ async fn client_acceptor(
         ..
     } = rw;
 
-    let proto = read
-        .retrieve_data::<ProtocolVersionKey>()
-        .cloned()
-        .unwrap_or(UNKNOWN_VERSION);
-
     writer.write_packet(LoginSuccess::from(&profile)).await?;
+
+    let biome_tag = dimension_from_protocol(760).unwrap().get_tag(&format!("minecraft:worldgen/biome")).cloned().unwrap();
+
+    use mcprotocol::prelude::drax;
+    use mcprotocol::prelude::drax_derive::nbt;
+    let join_game_tag = nbt! {
+        "minecraft:dimension_type" -> {
+            "type" -> "minecraft:dimension_type",
+            "value" -> vec![nbt! {
+                "name" -> "minecraft:overworld",
+                "id" -> 0,
+                "element" -> {
+                    "natural" -> 1u8,
+                    "coordinate_scale" -> 1.0f64,
+                    "height" -> 384,
+                    "min_y" -> -64i32,
+                    "piglin_safe" -> 0u8,
+                    "has_raids" -> 1u8,
+                    "logical_height" -> 384,
+                    "ultrawarm" -> 0u8,
+                    "bed_works" -> 1u8,
+                    "respawn_anchor_works" -> 0u8,
+                    "ambient_light" -> 0.0f32,
+                    "effects" -> "minecraft:overworld",
+                    "has_skylight" -> 1u8,
+                    "monster_spawn_block_light_limit" -> 0,
+                    "infiniburn" -> "#minecraft:infiniburn_overworld",
+                    "has_ceiling" -> 0u8,
+                    "monster_spawn_light_level" -> {
+                        "type" -> "minecraft:uniform",
+                        "value" -> {
+                            "min_inclusive" -> 0,
+                            "max_inclusive" -> 7,
+                        },
+                    },
+                },
+            }],
+        },
+        "minecraft:worldgen/biome" -> biome_tag,
+        "minecraft:chat_type" -> {
+            "type" -> "minecraft:chat_type",
+            "value" -> vec![nbt! {
+                "name" -> "minecraft:chat",
+                "id" -> 0,
+                "element" -> {
+                    "narration" -> {
+                        "translation_key" -> "chat.type.text.narrate",
+                        "parameters" -> Tag::ListTag(8, vec![
+                            Tag::string_tag("sender"),
+                            Tag::string_tag("content"),
+                        ]),
+                    },
+                    "chat" -> {
+                        "translation_key" -> "chat.type.text",
+                        "parameters" -> Tag::ListTag(8, vec![
+                            Tag::string_tag("sender"),
+                            Tag::string_tag("content"),
+                        ]),
+                    },
+                },
+            }],
+        },
+    };
 
     writer
         .write_packet(JoinGame {
@@ -139,12 +197,8 @@ async fn client_acceptor(
             hardcore: false,
             game_type: GameType::Adventure,
             previous_game_type: GameType::None,
-            levels: vec![
-                "minecraft:overworld".to_string(),
-                "minecraft:the_nether".to_string(),
-                "minecraft:the_end".to_string(),
-            ],
-            codec: dimension_from_protocol(proto)?,
+            levels: vec!["minecraft:overworld".to_string()],
+            codec: join_game_tag,
             dimension_type: "minecraft:overworld".to_string(),
             dimension: "minecraft:overworld".to_string(),
             seed: 0,
@@ -185,7 +239,11 @@ async fn client_acceptor(
         })
         .await?;
 
-    log::info!("Successfully logged in player {} ({})", profile.name, profile.id);
+    log::info!(
+        "Successfully logged in player {} ({})",
+        profile.name,
+        profile.id
+    );
 
     writer
         .write_packet(PlayerInfo::AddPlayer(vec![AddPlayerEntry {
