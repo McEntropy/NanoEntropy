@@ -1,8 +1,11 @@
 use log::LevelFilter;
 use mcprotocol::auth::mojang::AuthenticatedClient;
-use mcprotocol::chat::Chat;
 use mcprotocol::commands::{Command, NodeStub};
 use mcprotocol::pin_fut;
+use mcprotocol::pipeline::MinecraftProtocolWriter;
+use mcprotocol::prelude::drax::nbt::{read_nbt, CompoundTag};
+use mcprotocol::prelude::drax::VarInt;
+use mcprotocol::prelude::AsyncWrite;
 use mcprotocol::protocol::chunk::Chunk;
 use mcprotocol::protocol::handshaking::sb::Handshake;
 use mcprotocol::protocol::login::cb::LoginSuccess;
@@ -12,16 +15,48 @@ use mcprotocol::protocol::status::cb::StatusResponsePlayers;
 use mcprotocol::registry::{ProtocolVersionKey, RegistryError, UNKNOWN_VERSION};
 use mcprotocol::server_loop::{BaseConfiguration, IncomingAuthenticationOption, ServerLoop};
 use mcprotocol::status::StatusBuilder;
+use std::io::Cursor;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+use tokio::time::interval;
 
-mod dimensions;
-mod keep_alive_broadcaster;
+#[derive(serde_derive::Deserialize, Debug)]
+struct ListPlayerInfo {
+    max_players: i32,
+    online_players: i32,
+}
+
+const fn default_log_level() -> LevelFilter {
+    LevelFilter::Info
+}
+
+#[derive(serde_derive::Deserialize, Debug)]
+struct Config {
+    motd: mcprotocol::chat::Chat,
+    player_info: ListPlayerInfo,
+    #[serde(default = "default_log_level")]
+    filter_level: LevelFilter,
+    #[serde(skip)]
+    favicon: Option<String>,
+}
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
+    let mut reader = Cursor::new(std::fs::read("./config.json")?);
+    let mut config: Config = serde_json::from_reader(&mut reader)?;
+
+    let path = Path::new("./server-icon.png");
+    if path.exists() {
+        let base_64 = image_base64::to_base64(path.to_str().unwrap());
+        config.favicon = Some(base_64);
+    }
+
+    let config = Arc::new(config);
+
     fern::Dispatch::new()
         .format(move |out, message, record| {
             out.finish(format_args!(
@@ -32,7 +67,7 @@ pub async fn main() -> anyhow::Result<()> {
                 message
             ))
         })
-        .level(LevelFilter::Info)
+        .level(config.filter_level)
         .chain(std::io::stdout())
         .apply()?;
 
@@ -40,6 +75,7 @@ pub async fn main() -> anyhow::Result<()> {
 
     log::info!("Listener bound to 127.0.0.1:25565");
 
+    let server_loop_cfg = config.clone();
     let server_loop = Arc::new(ServerLoop::new(
         BaseConfiguration {
             auth_option: IncomingAuthenticationOption::MOJANG,
@@ -48,7 +84,7 @@ pub async fn main() -> anyhow::Result<()> {
             auth_url: None,
         },
         pin_fut!(client_acceptor),
-        |h| Box::pin(status_responder(h)),
+        move |h| Box::pin(status_responder(server_loop_cfg.clone(), h)),
     ));
 
     log::info!("Nano Entropy completed boot, can now accept clients.");
@@ -108,7 +144,7 @@ async fn client_acceptor(
                 "minecraft:the_nether".to_string(),
                 "minecraft:the_end".to_string(),
             ],
-            codec: dimensions::dimension_from_protocol(proto)?,
+            codec: dimension_from_protocol(proto)?,
             dimension_type: "minecraft:overworld".to_string(),
             dimension: "minecraft:overworld".to_string(),
             seed: 0,
@@ -189,7 +225,7 @@ async fn client_acceptor(
         })
         .await?;
 
-    let ping_writer = keep_alive_broadcaster::broadcast_pings(writer);
+    let ping_writer = broadcast_pings(writer);
     let client_read: JoinHandle<Result<(), RegistryError>> = tokio::spawn(async move {
         loop {
             match read.execute_next_packet(&mut ()).await {
@@ -210,23 +246,55 @@ async fn client_acceptor(
     tokio::select! {
         _ = ping_writer => {
             log::debug!("Ping writer finished in select.");
-            return Ok(());
         }
         _ = client_read => {
             log::debug!("Client read finished in select.");
-            return Ok(());
         }
     };
+    Ok(())
 }
 
-async fn status_responder(_: Handshake) -> StatusBuilder {
-    return StatusBuilder {
+async fn status_responder(cfg: Arc<Config>, _: Handshake) -> StatusBuilder {
+    StatusBuilder {
         players: StatusResponsePlayers {
-            max: 2,
-            online: -1,
+            max: cfg.player_info.max_players,
+            online: cfg.player_info.online_players,
             sample: vec![],
         },
-        description: Chat::literal("Nano Entropy"),
-        favicon: None,
-    };
+        description: cfg.motd.clone(),
+        favicon: cfg.favicon.as_ref().cloned(),
+    }
+}
+
+pub fn dimension_from_protocol(
+    protocol_version: VarInt,
+) -> mcprotocol::prelude::drax::transport::Result<CompoundTag> {
+    let mut buf = std::io::Cursor::new(match protocol_version {
+        760 => Vec::from(*include_bytes!(
+            "../dimension_snapshot_client/snapshots/760.b.nbt"
+        )),
+        _ => Vec::from(*include_bytes!(
+            "../dimension_snapshot_client/snapshots/760.b.nbt"
+        )),
+    });
+    read_nbt(&mut buf, 0x200000u64).map(|x| x.expect("Compound tag should exist."))
+}
+
+pub fn broadcast_pings<W: AsyncWrite + Unpin + Sized + Send + Sync + 'static>(
+    mut protocol_writer: MinecraftProtocolWriter<W>,
+) -> JoinHandle<Result<(), RegistryError>> {
+    tokio::task::spawn(async move {
+        let mut interval = interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            protocol_writer
+                .write_packet(KeepAlive {
+                    id: std::time::SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64,
+                })
+                .await?;
+        }
+    })
 }

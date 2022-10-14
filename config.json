@@ -1,0 +1,11 @@
+{
+    "motd": {
+        "text": "Nano Entropy",
+        "color": "red"
+    },
+    "player_info": {
+        "max_players": -10,
+        "online_players": -20
+    },
+    "filter_level": "INFO"
+}
