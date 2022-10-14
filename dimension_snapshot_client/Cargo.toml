@@ -1,5 +1,5 @@
 [package]
-name = "nano_entropy"
+name = "dimension_snapshot_client"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,5 +11,4 @@ chrono = "0.4.22"
 fern = "0.6.1"
 log = "0.4.17"
 mcprotocol = { git = "https://github.com/MCEntropy/MCProtocol.rs", branch = "rewrite" }
-memoize = { version = "0.3.1", features = ["full"] }
 tokio = { version = "1.21.2", features = ["full"] }
