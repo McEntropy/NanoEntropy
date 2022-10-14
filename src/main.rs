@@ -71,9 +71,9 @@ pub async fn main() -> anyhow::Result<()> {
         .chain(std::io::stdout())
         .apply()?;
 
-    let listener = TcpListener::bind("127.0.0.1:25565").await?;
+    let listener = TcpListener::bind("0.0.0.0:25565").await?;
 
-    log::info!("Listener bound to 127.0.0.1:25565");
+    log::info!("Listener bound to 0.0.0.0:25565");
 
     let server_loop_cfg = config.clone();
     let server_loop = Arc::new(ServerLoop::new(
