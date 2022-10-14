@@ -185,6 +185,8 @@ async fn client_acceptor(
         })
         .await?;
 
+    log::info!("Successfully logged in player {}", profile.name);
+
     writer
         .write_packet(PlayerInfo::AddPlayer(vec![AddPlayerEntry {
             profile: profile.clone(),
