@@ -1,16 +1,11 @@
 use log::LevelFilter;
 use mcprotocol::auth::mojang::AuthenticatedClient;
-use mcprotocol::commands::{Command, NodeStub};
 use mcprotocol::pin_fut;
 use mcprotocol::pipeline::MinecraftProtocolWriter;
-use mcprotocol::prelude::drax::nbt::{read_nbt, CompoundTag, Tag};
-use mcprotocol::prelude::drax::VarInt;
 use mcprotocol::prelude::AsyncWrite;
-use mcprotocol::protocol::chunk::Chunk;
 use mcprotocol::protocol::handshaking::sb::Handshake;
 use mcprotocol::protocol::login::cb::LoginSuccess;
 use mcprotocol::protocol::play::cb::*;
-use mcprotocol::protocol::play::RelativeArgument;
 use mcprotocol::protocol::status::cb::StatusResponsePlayers;
 use mcprotocol::registry::RegistryError;
 use mcprotocol::server_loop::{BaseConfiguration, IncomingAuthenticationOption, ServerLoop};
@@ -24,6 +19,8 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
+mod join;
+
 #[derive(serde_derive::Deserialize, Debug)]
 struct ListPlayerInfo {
     max_players: i32,
@@ -34,6 +31,12 @@ const fn default_log_level() -> LevelFilter {
     LevelFilter::Info
 }
 
+#[derive(serde_derive::Deserialize, Debug, Clone)]
+struct GameCfg {
+    title: mcprotocol::chat::Chat,
+    subtitle: mcprotocol::chat::Chat,
+}
+
 #[derive(serde_derive::Deserialize, Debug)]
 struct Config {
     motd: mcprotocol::chat::Chat,
@@ -42,6 +45,7 @@ struct Config {
     filter_level: LevelFilter,
     #[serde(skip)]
     favicon: Option<String>,
+    game: GameCfg,
 }
 
 #[tokio::main]
@@ -92,10 +96,13 @@ pub async fn main() -> anyhow::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let loop_clone = server_loop.clone();
+        let cfg_clone = config.clone();
         tokio::spawn(async move {
             let (read, write) = stream.into_split();
             if let Err(registry_error) =
-                ServerLoop::accept_client(loop_clone, InitialClientContext {}, read, write).await
+            ServerLoop::accept_client(loop_clone, InitialClientContext {
+                cfg: cfg_clone,
+            }, read, write).await
             {
                 if !matches!(
                     registry_error,
@@ -113,10 +120,12 @@ pub async fn main() -> anyhow::Result<()> {
     }
 }
 
-struct InitialClientContext {}
+struct InitialClientContext {
+    cfg: Arc<Config>,
+}
 
 async fn client_acceptor(
-    _: InitialClientContext,
+    ctx: InitialClientContext,
     rw: AuthenticatedClient<OwnedReadHalf, OwnedWriteHalf>,
 ) -> Result<(), RegistryError> {
     let AuthenticatedClient {
@@ -128,162 +137,7 @@ async fn client_acceptor(
 
     writer.write_packet(LoginSuccess::from(&profile)).await?;
 
-    let biome_tag = dimension_from_protocol(760).unwrap().get_tag(&format!("minecraft:worldgen/biome")).cloned().unwrap();
-
-    use mcprotocol::prelude::drax;
-    use mcprotocol::prelude::drax_derive::nbt;
-    let join_game_tag = nbt! {
-        "minecraft:dimension_type" -> {
-            "type" -> "minecraft:dimension_type",
-            "value" -> vec![nbt! {
-                "name" -> "minecraft:overworld",
-                "id" -> 0,
-                "element" -> {
-                    "natural" -> 1u8,
-                    "coordinate_scale" -> 1.0f64,
-                    "height" -> 384,
-                    "min_y" -> -64i32,
-                    "piglin_safe" -> 0u8,
-                    "has_raids" -> 1u8,
-                    "logical_height" -> 384,
-                    "ultrawarm" -> 0u8,
-                    "bed_works" -> 1u8,
-                    "respawn_anchor_works" -> 0u8,
-                    "ambient_light" -> 0.0f32,
-                    "effects" -> "minecraft:overworld",
-                    "has_skylight" -> 1u8,
-                    "monster_spawn_block_light_limit" -> 0,
-                    "infiniburn" -> "#minecraft:infiniburn_overworld",
-                    "has_ceiling" -> 0u8,
-                    "monster_spawn_light_level" -> {
-                        "type" -> "minecraft:uniform",
-                        "value" -> {
-                            "min_inclusive" -> 0,
-                            "max_inclusive" -> 7,
-                        },
-                    },
-                },
-            }],
-        },
-        "minecraft:worldgen/biome" -> biome_tag,
-        "minecraft:chat_type" -> {
-            "type" -> "minecraft:chat_type",
-            "value" -> vec![nbt! {
-                "name" -> "minecraft:chat",
-                "id" -> 0,
-                "element" -> {
-                    "narration" -> {
-                        "translation_key" -> "chat.type.text.narrate",
-                        "parameters" -> Tag::ListTag(8, vec![
-                            Tag::string_tag("sender"),
-                            Tag::string_tag("content"),
-                        ]),
-                    },
-                    "chat" -> {
-                        "translation_key" -> "chat.type.text",
-                        "parameters" -> Tag::ListTag(8, vec![
-                            Tag::string_tag("sender"),
-                            Tag::string_tag("content"),
-                        ]),
-                    },
-                },
-            }],
-        },
-    };
-
-    writer
-        .write_packet(JoinGame {
-            player_id: 1,
-            hardcore: false,
-            game_type: GameType::Adventure,
-            previous_game_type: GameType::None,
-            levels: vec!["minecraft:overworld".to_string()],
-            codec: join_game_tag,
-            dimension_type: "minecraft:overworld".to_string(),
-            dimension: "minecraft:overworld".to_string(),
-            seed: 0,
-            max_players: 20,
-            chunk_radius: 0,
-            simulation_distance: 0,
-            reduced_debug_info: false,
-            show_death_screen: true,
-            is_debug: false,
-            is_flat: false,
-            last_death_location: None,
-        })
-        .await?;
-
-    writer
-        .write_packet(PlayerAbilities {
-            player_abilities_map: PlayerAbilitiesBitMap {
-                invulnerable: true,
-                flying: true,
-                can_fly: true,
-                instant_build: false,
-            },
-            flying_speed: 0.1,
-            fov_modifier: 0.1,
-        })
-        .await?;
-
-    writer
-        .write_packet(PlayerPosition {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            y_rot: 0.0,
-            x_rot: 0.0,
-            relative_arguments: RelativeArgument::from_mask(0x08),
-            id: 0,
-            dismount_vehicle: false,
-        })
-        .await?;
-
-    log::info!(
-        "Successfully logged in player {} ({})",
-        profile.name,
-        profile.id
-    );
-
-    writer
-        .write_packet(PlayerInfo::AddPlayer(vec![AddPlayerEntry {
-            profile: profile.clone(),
-            game_type: GameType::Adventure,
-            latency: 55,
-            display_name: None,
-            key_data: mojang_key.as_ref().cloned(),
-        }]))
-        .await?;
-
-    writer
-        .write_packet(DeclareCommands {
-            commands: vec![Command {
-                command_flags: 0,
-                children: vec![],
-                redirect: None,
-                node_stub: NodeStub::Root,
-            }],
-            root_index: 0,
-        })
-        .await?;
-
-    writer
-        .write_packet(LevelChunkWithLight {
-            chunk_data: LevelChunkData {
-                chunk: Chunk::new(0, 0),
-                block_entities: vec![],
-            },
-            light_data: LightUpdateData {
-                trust_edges: true,
-                sky_y_mask: vec![],
-                block_y_mask: vec![],
-                empty_sky_y_mask: vec![],
-                empty_block_y_mask: vec![],
-                sky_updates: vec![vec![]; 2048],
-                block_updates: vec![vec![]; 2048],
-            },
-        })
-        .await?;
+    join::send_join_packets(&mut writer, mojang_key, profile, ctx.cfg.clone()).await?;
 
     let ping_writer = broadcast_pings(writer);
     let client_read: JoinHandle<Result<(), RegistryError>> = tokio::spawn(async move {
@@ -310,7 +164,8 @@ async fn client_acceptor(
         _ = client_read => {
             log::debug!("Client read finished in select.");
         }
-    };
+    }
+
     Ok(())
 }
 
@@ -324,20 +179,6 @@ async fn status_responder(cfg: Arc<Config>, _: Handshake) -> StatusBuilder {
         description: cfg.motd.clone(),
         favicon: cfg.favicon.as_ref().cloned(),
     }
-}
-
-pub fn dimension_from_protocol(
-    protocol_version: VarInt,
-) -> mcprotocol::prelude::drax::transport::Result<CompoundTag> {
-    let mut buf = std::io::Cursor::new(match protocol_version {
-        760 => Vec::from(*include_bytes!(
-            "../dimension_snapshot_client/snapshots/760.b.nbt"
-        )),
-        _ => Vec::from(*include_bytes!(
-            "../dimension_snapshot_client/snapshots/760.b.nbt"
-        )),
-    });
-    read_nbt(&mut buf, 0x200000u64).map(|x| x.expect("Compound tag should exist."))
 }
 
 pub fn broadcast_pings<W: AsyncWrite + Unpin + Sized + Send + Sync + 'static>(

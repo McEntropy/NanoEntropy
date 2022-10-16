@@ -1,11 +1,21 @@
 {
-    "motd": {
-        "text": "Nano Entropy",
-        "color": "red"
+  "motd": {
+    "text": "Nano Entropy",
+    "color": "red"
+  },
+  "player_info": {
+    "max_players": -10,
+    "online_players": -20
+  },
+  "filter_level": "TRACE",
+  "game": {
+    "title": {
+      "text": "Top Text",
+      "color": "green"
     },
-    "player_info": {
-        "max_players": -10,
-        "online_players": -20
-    },
-    "filter_level": "INFO"
+    "subtitle": {
+      "text": "Bottom Text",
+      "color": "aqua"
+    }
+  }
 }
