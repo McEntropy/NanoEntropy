@@ -1,5 +1,4 @@
 use log::LevelFilter;
-use mcprotocol::auth::mojang::AuthenticatedClient;
 use mcprotocol::pin_fut;
 use mcprotocol::pipeline::MinecraftProtocolWriter;
 use mcprotocol::prelude::AsyncWrite;
@@ -14,6 +13,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
+use mcprotocol::auth::AuthenticatedClient;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -46,6 +46,7 @@ struct Config {
     #[serde(skip)]
     favicon: Option<String>,
     game: GameCfg,
+    bind: String,
 }
 
 #[tokio::main]
@@ -75,9 +76,9 @@ pub async fn main() -> anyhow::Result<()> {
         .chain(std::io::stdout())
         .apply()?;
 
-    let listener = TcpListener::bind("0.0.0.0:25565").await?;
+    let listener = TcpListener::bind(&config.bind).await?;
 
-    log::info!("Listener bound to 0.0.0.0:25565");
+    log::info!("Listener bound to {}", config.bind);
 
     let server_loop_cfg = config.clone();
     let server_loop = Arc::new(ServerLoop::new(
@@ -135,7 +136,7 @@ async fn client_acceptor(
         ..
     } = rw;
 
-    writer.write_packet(LoginSuccess::from(&profile)).await?;
+    writer.write_packet(&LoginSuccess::from(&profile)).await?;
 
     join::send_join_packets(&mut writer, mojang_key, profile, ctx.cfg.clone()).await?;
 
@@ -189,7 +190,7 @@ pub fn broadcast_pings<W: AsyncWrite + Unpin + Sized + Send + Sync + 'static>(
         loop {
             interval.tick().await;
             protocol_writer
-                .write_packet(KeepAlive {
+                .write_packet(&KeepAlive {
                     id: std::time::SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap()

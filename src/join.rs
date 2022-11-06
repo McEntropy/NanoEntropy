@@ -1,16 +1,20 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
+use crate::Config;
 use mcprotocol::commands::{Command, NodeStub};
 use mcprotocol::pipeline::MinecraftProtocolWriter;
-use mcprotocol::prelude::drax::nbt::{read_nbt};
+use mcprotocol::prelude::drax::nbt::read_nbt;
 use mcprotocol::prelude::drax::nbt::CompoundTag;
 use mcprotocol::prelude::drax::transport::TransportProcessorContext;
 use mcprotocol::prelude::drax::VarInt;
 use mcprotocol::prelude::drax::{ctg, nbt::Tag, transport::encryption::EncryptedWriter};
 use mcprotocol::protocol::chunk::Chunk;
 use mcprotocol::protocol::login::MojangIdentifiedKey;
-use mcprotocol::protocol::play::cb::{DeclareCommands, JoinGame, LevelChunkWithLight, PlayerAbilities, PlayerInfo, PlayerPosition, PluginMessage, SetSubtitle, SetTitle, SetTitleAnimationTimes};
+use mcprotocol::protocol::play::cb::{
+    DeclareCommands, JoinGame, LevelChunkWithLight, PlayerAbilities, PlayerInfo, PlayerPosition,
+    PluginMessage, SetSubtitle, SetTitle, SetTitleAnimationTimes,
+};
 use mcprotocol::protocol::play::{
     AddPlayerEntry, GameType, LevelChunkData, LightUpdateData, PlayerAbilitiesBitMap,
     RelativeArgument,
@@ -18,7 +22,6 @@ use mcprotocol::protocol::play::{
 use mcprotocol::protocol::GameProfile;
 use mcprotocol::registry::RegistryError;
 use tokio::net::tcp::OwnedWriteHalf;
-use crate::Config;
 
 pub fn dimension_from_protocol(
     protocol_version: VarInt,
@@ -108,7 +111,7 @@ pub(super) async fn send_join_packets(
     };
 
     writer
-        .write_packet(JoinGame {
+        .write_packet(&JoinGame {
             player_id: 1,
             hardcore: false,
             game_type: GameType::Adventure,
@@ -120,7 +123,7 @@ pub(super) async fn send_join_packets(
             seed: 0,
             max_players: 20,
             chunk_radius: 0,
-            simulation_distance: 0,
+            simulation_distance: 10,
             reduced_debug_info: false,
             show_death_screen: true,
             is_debug: false,
@@ -138,7 +141,7 @@ pub(super) async fn send_join_packets(
     )?;
     if writer.protocol_version() > 340 {
         writer
-            .write_packet(PluginMessage {
+            .write_packet(&PluginMessage {
                 identifier: mcprotocol::protocol::constants::minecraft_channels::BRAND_CHANNEL
                     .to_string(),
                 data: brand_data.into_inner(),
@@ -146,17 +149,17 @@ pub(super) async fn send_join_packets(
             .await?;
     } else {
         writer
-            .write_packet(PluginMessage {
+            .write_packet(&PluginMessage {
                 identifier:
-                mcprotocol::protocol::constants::minecraft_channels::LEGACY_BRAND_CHANNEL
-                    .to_string(),
+                    mcprotocol::protocol::constants::minecraft_channels::LEGACY_BRAND_CHANNEL
+                        .to_string(),
                 data: brand_data.into_inner(),
             })
             .await?;
     }
 
     writer
-        .write_packet(PlayerAbilities {
+        .write_packet(&PlayerAbilities {
             player_abilities_map: PlayerAbilitiesBitMap {
                 invulnerable: true,
                 flying: true,
@@ -169,9 +172,9 @@ pub(super) async fn send_join_packets(
         .await?;
 
     writer
-        .write_packet(PlayerPosition {
+        .write_packet(&PlayerPosition {
             x: 0.0,
-            y: 0.0,
+            y: 50.0,
             z: 0.0,
             y_rot: 0.0,
             x_rot: 0.0,
@@ -188,7 +191,7 @@ pub(super) async fn send_join_packets(
     );
 
     writer
-        .write_packet(PlayerInfo::AddPlayer(vec![AddPlayerEntry {
+        .write_packet(&PlayerInfo::AddPlayer(vec![AddPlayerEntry {
             profile: profile.clone(),
             game_type: GameType::Adventure,
             latency: 55,
@@ -198,7 +201,7 @@ pub(super) async fn send_join_packets(
         .await?;
 
     writer
-        .write_packet(DeclareCommands {
+        .write_packet(&DeclareCommands {
             commands: vec![Command {
                 command_flags: 0,
                 children: vec![],
@@ -209,31 +212,53 @@ pub(super) async fn send_join_packets(
         })
         .await?;
 
+    for x in -5..5 {
+        for z in -5..5 {
+            let mut chunk = Chunk::new(x, z);
+            chunk.rewrite_plane(1, 3).expect("Plane should rewrite.");
+            chunk.rewrite_plane(2, 3).expect("Plane should rewrite.");
+            chunk.rewrite_plane(3, 1).expect("Plane should rewrite.");
+            chunk.rewrite_plane(4, 2).expect("Plane should rewrite.");
+
+            chunk.set_block_id(7, 25, 8, 2).expect("Block should set");
+
+            writer
+                .write_packet(&LevelChunkWithLight {
+                    chunk_data: LevelChunkData {
+                        chunk,
+                        block_entities: vec![],
+                    },
+                    light_data: LightUpdateData {
+                        trust_edges: true,
+                        sky_y_mask: vec![],
+                        block_y_mask: vec![],
+                        empty_sky_y_mask: vec![],
+                        empty_block_y_mask: vec![],
+                        sky_updates: vec![vec![]; 2048],
+                        block_updates: vec![vec![]; 2048],
+                    },
+                })
+                .await?;
+        }
+    }
+
     writer
-        .write_packet(LevelChunkWithLight {
-            chunk_data: LevelChunkData {
-                chunk: Chunk::new(0, 0),
-                block_entities: vec![],
-            },
-            light_data: LightUpdateData {
-                trust_edges: true,
-                sky_y_mask: vec![],
-                block_y_mask: vec![],
-                empty_sky_y_mask: vec![],
-                empty_block_y_mask: vec![],
-                sky_updates: vec![vec![]; 2048],
-                block_updates: vec![vec![]; 2048],
-            },
+        .write_packet(&SetTitleAnimationTimes {
+            fade_in: 0,
+            stay: i32::MAX,
+            fade_out: 0,
         })
         .await?;
-
-    writer.write_packet(SetTitleAnimationTimes {
-        fade_in: 0,
-        stay: i32::MAX,
-        fade_out: 0,
-    }).await?;
-    writer.write_packet(SetTitle { text: cfg.game.title.clone() }).await?;
-    writer.write_packet(SetSubtitle { text: cfg.game.subtitle.clone() }).await?;
+    writer
+        .write_packet(&SetTitle {
+            text: cfg.game.title.clone(),
+        })
+        .await?;
+    writer
+        .write_packet(&SetSubtitle {
+            text: cfg.game.subtitle.clone(),
+        })
+        .await?;
 
     Ok(())
 }
